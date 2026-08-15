@@ -1,19 +1,27 @@
 import { NextResponse } from "next/server";
-import { calleClient } from "@/lib/calle/client";
 import { createAdminClient } from "@/lib/supabase/server";
 
 type RouteContext = {
   params: Promise<{ id: string }>;
 };
 
-export const maxDuration = 300;
-
-export async function POST(_request: Request, context: RouteContext) {
+export async function POST(request: Request, context: RouteContext) {
   try {
     const { id } = await context.params;
 
     if (!id) {
-      return NextResponse.json({ error: "Request ID is required." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Request ID is required." },
+        { status: 400 },
+      );
+    }
+
+    const apiKey = process.env.CALLE_API_KEY;
+    if (!apiKey) {
+      return NextResponse.json(
+        { error: "CALLE_API_KEY is not configured." },
+        { status: 500 },
+      );
     }
 
     const supabase = createAdminClient();
@@ -84,86 +92,99 @@ export async function POST(_request: Request, context: RouteContext) {
       .filter(Boolean)
       .join(" ");
 
-    const call = await calleClient.calls.createAndWait({
-      task,
-      recipient: {
-        phone: supplier.phone,
-      },
-      resultSchema: {
-        type: "object",
-        required: [
-          "supplier_can_fulfill",
-          "price",
-          "currency",
-          "availability",
-          "minimum_order",
-          "delivery_time",
-          "payment_terms",
-          "additional_fees",
-          "notes",
-        ],
-        properties: {
-          supplier_can_fulfill: {
-            type: "string",
-            enum: ["yes", "no", "unknown"],
-          },
-          price: { type: "string" },
-          currency: { type: "string" },
-          availability: { type: "string" },
-          minimum_order: { type: "string" },
-          delivery_time: { type: "string" },
-          payment_terms: { type: "string" },
-          additional_fees: { type: "string" },
-          notes: { type: "string" },
+    const resultSchema = {
+      type: "object",
+      required: [
+        "supplier_can_fulfill",
+        "price",
+        "currency",
+        "availability",
+        "minimum_order",
+        "delivery_time",
+        "payment_terms",
+        "additional_fees",
+        "notes",
+      ],
+      properties: {
+        supplier_can_fulfill: {
+          type: "string",
+          enum: ["yes", "no", "unknown"],
         },
+        price: { type: "string" },
+        currency: { type: "string" },
+        availability: { type: "string" },
+        minimum_order: { type: "string" },
+        delivery_time: { type: "string" },
+        payment_terms: { type: "string" },
+        additional_fees: { type: "string" },
+        notes: { type: "string" },
       },
-      metadata: {
-        procurement_request_id: id,
-        supplier_id: supplier.id,
+    };
+
+    const webhookUrl =
+      `${new URL(request.url).origin}/api/calle/webhook`;
+
+    // One outbound request only. We deliberately do NOT use createAndWait()
+    // because waiting/polling inside a Cloudflare Worker can exceed the
+    // Worker subrequest limit.
+    const response = await fetch("https://api.heycall-e.com/v1/calls", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": `procurecall:${id}:${supplier.id}:${Date.now()}`,
       },
+      body: JSON.stringify({
+        task,
+        recipients: [
+          {
+            phones: [supplier.phone],
+          },
+        ],
+        result_schema: resultSchema,
+        metadata: {
+          procurement_request_id: id,
+          supplier_id: supplier.id,
+        },
+        webhook_url: webhookUrl,
+      }),
     });
-    const { error: saveError } = await supabase
-  .from("call_results")
-  .insert({
-    procurement_request_id: id,
-    supplier_id: supplier.id,
-    call_id: call.id,
-    status: call.status,
-    task_completed: call.taskCompleted,
-    completion_confidence:
-      typeof call.completionConfidence === "object"
-        ? call.completionConfidence?.score ?? null
-        : call.completionConfidence ?? null,
-    summary: call.summary ?? null,
-    structured_result: call.structuredResult ?? null,
-    evidence: call.evidence ?? null,
-  });
 
-if (saveError) {
-  console.error("Failed to save CALL-E result:", saveError);
+    const body = await response.json().catch(() => null);
 
-  return NextResponse.json(
-    {
-      error: "Call completed, but the result could not be saved.",
-      callId: call.id,
-    },
-    { status: 500 },
-  );
-}
+    if (!response.ok) {
+      console.error("CALL-E create call failed:", response.status, body);
 
-console.log("CALL-E result saved:", call.id);
+      return NextResponse.json(
+        {
+          error:
+            body?.error?.message ||
+            body?.message ||
+            "CALL-E could not start the supplier call.",
+        },
+        { status: response.status >= 400 && response.status < 600 ? response.status : 502 },
+      );
+    }
+
+    const callId = body?.id ?? body?.call_id ?? body?.call?.id ?? null;
+
+    if (!callId) {
+      console.error("CALL-E returned no call ID:", body);
+
+      return NextResponse.json(
+        { error: "CALL-E started an unexpected response without a call ID." },
+        { status: 502 },
+      );
+    }
+
+    console.log("CALL-E call started:", callId);
 
     return NextResponse.json({
       success: true,
-      callId: call.id,
-      status: call.status,
-      taskCompleted: call.taskCompleted,
-      completionConfidence: call.completionConfidence,
-      structuredResult: call.structuredResult,
-      summary: call.summary,
-      evidence: call.evidence,
-      failureCode: call.failureCode,
-      failureMessage: call.failureMessage,
+      callId,
+      status: body?.status ?? "queued",
+      message:
+        "Supplier call started. CALL-E will send the completed result to ProcureCall.",
     });
   } catch (error) {
     console.error("ProcureCall supplier call failed:", error);
@@ -179,3 +200,4 @@ console.log("CALL-E result saved:", call.id);
     );
   }
 }
+
