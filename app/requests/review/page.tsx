@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 
 type ProcurementRequest = {
   id: string;
@@ -31,7 +31,7 @@ type CallResult = {
   failureMessage?: string | null;
 };
 
-export default function ReviewRequestPage() {
+function ReviewRequestContent() {
   const searchParams = useSearchParams();
   const requestId = searchParams.get("id");
 
@@ -243,5 +243,22 @@ export default function ReviewRequestPage() {
         )}
       </section>
     </main>
+  );
+}
+export default function ReviewRequestPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="min-h-screen bg-white text-black">
+          <section className="mx-auto max-w-4xl px-6 py-10">
+            <div className="rounded-2xl border border-black/10 p-6 text-sm text-black/60">
+              Loading request...
+            </div>
+          </section>
+        </main>
+      }
+    >
+      <ReviewRequestContent />
+    </Suspense>
   );
 }
