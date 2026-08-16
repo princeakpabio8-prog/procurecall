@@ -1,112 +1,86 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/server";
 
-type CreateRequestBody = {
-  productOrService?: string;
-  quantity?: string;
-  targetBudget?: string;
-  deliveryLocation?: string;
-  instructions?: string;
-  supplierPhone?: string;
+type RouteContext = {
+  params: Promise<Record<string, string>>;
 };
 
-function getErrorMessage(error: unknown) {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "string") return error;
-
+export async function GET(_request: Request, context: RouteContext) {
   try {
-    return JSON.stringify(error);
-  } catch {
-    return "Unknown server error.";
-  }
-}
+    const { id } = await context.params;
 
-export async function POST(request: Request) {
-  try {
-    const body = (await request.json()) as CreateRequestBody;
-    const productOrService = body.productOrService?.trim();
-
-    if (!productOrService) {
+    if (!id) {
       return NextResponse.json(
-        { error: "Product or service is required." },
+        { error: "Request ID is required." },
         { status: 400 },
       );
     }
 
     const supabase = createAdminClient();
 
-    const { data: procurementRequest, error: requestError } =
-      await supabase
-        .from("procurement_requests")
-        .insert({
-          product_or_service: productOrService,
-          quantity: body.quantity?.trim() || null,
-          target_budget: body.targetBudget?.trim() || null,
-          delivery_location: body.deliveryLocation?.trim() || null,
-          instructions: body.instructions?.trim() || null,
-          status: "draft",
-        })
-        .select()
-        .single();
+    const { data: procurementRequest, error: requestError } = await supabase
+      .from("procurement_requests")
+      .select("*")
+      .eq("id", id)
+      .single();
 
     if (requestError) {
-      console.error(
-        "Failed to create procurement request:",
-        requestError,
+      console.error("Failed to load procurement request:", requestError);
+
+      return NextResponse.json(
+        { error: "Procurement request not found." },
+        { status: 404 },
       );
+    }
+
+    const { data: suppliers, error: supplierError } = await supabase
+      .from("suppliers")
+      .select("*")
+      .eq("procurement_request_id", id)
+      .order("created_at", { ascending: true });
+
+    if (supplierError) {
+      console.error("Failed to load suppliers:", supplierError);
 
       return NextResponse.json(
         {
           error:
-            requestError.message ||
-            "Failed to save procurement request.",
+            "Request was found, but suppliers could not be loaded.",
         },
         { status: 500 },
       );
     }
 
-    if (body.supplierPhone?.trim()) {
-      const { error: supplierError } = await supabase
-        .from("suppliers")
-        .insert({
-          procurement_request_id: procurementRequest.id,
-          phone: body.supplierPhone.trim(),
-          name: null,
-          region: null,
-        });
+    const { data: callResult, error: callResultError } = await supabase
+      .from("call_results")
+      .select("*")
+      .eq("procurement_request_id", id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-      if (supplierError) {
-        console.error(
-          "Failed to create supplier:",
-          supplierError,
-        );
+    if (callResultError) {
+      console.error("Failed to load CALL-E result:", callResultError);
 
-        return NextResponse.json(
-          {
-            error:
-              supplierError.message ||
-              "Request was created, but the supplier could not be saved.",
-            requestId: procurementRequest.id,
-          },
-          { status: 500 },
-        );
-      }
+      return NextResponse.json(
+        {
+          error:
+            "Request was found, but the CALL-E result could not be loaded.",
+        },
+        { status: 500 },
+      );
     }
 
-    return NextResponse.json(
-      {
-        success: true,
-        request: procurementRequest,
-      },
-      { status: 201 },
-    );
+    return NextResponse.json({
+      request: procurementRequest,
+      suppliers: suppliers ?? [],
+      callResult: callResult ?? null,
+    });
   } catch (error) {
-    const message = getErrorMessage(error);
-
-    console.error("Unexpected request API error:", error);
+    console.error("Unexpected request detail API error:", error);
 
     return NextResponse.json(
-      { error: message },
+      { error: "Failed to load procurement request." },
       { status: 500 },
     );
   }
