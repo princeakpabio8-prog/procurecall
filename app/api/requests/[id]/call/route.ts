@@ -1,56 +1,70 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/server";
 
-type RouteContext = {
-  params: Promise<{ id: string }>;
-};
-
-export async function POST(request: Request, context: RouteContext) {
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
   try {
-    const { id } = await context.params;
+    const { id } = await params;
 
     if (!id) {
       return NextResponse.json(
         { error: "Request ID is required." },
-        { status: 400 },
+        { status: 400 }
       );
     }
 
     const apiKey = process.env.CALLE_API_KEY;
+
     if (!apiKey) {
       return NextResponse.json(
         { error: "CALLE_API_KEY is not configured." },
-        { status: 500 },
+        { status: 500 }
       );
     }
 
     const supabase = createAdminClient();
 
-    const { data: procurementRequest, error: requestError } = await supabase
+    const {
+      data: procurementRequest,
+      error: requestError,
+    } = await supabase
       .from("procurement_requests")
       .select("*")
       .eq("id", id)
       .single();
 
     if (requestError || !procurementRequest) {
-      console.error("Failed to load procurement request:", requestError);
+      console.error(
+        "Failed to load procurement request:",
+        requestError
+      );
+
       return NextResponse.json(
         { error: "Procurement request not found." },
-        { status: 404 },
+        { status: 404 }
       );
     }
 
-    const { data: suppliers, error: supplierError } = await supabase
+    const {
+      data: suppliers,
+      error: supplierError,
+    } = await supabase
       .from("suppliers")
       .select("*")
       .eq("procurement_request_id", id)
       .order("created_at", { ascending: true });
 
     if (supplierError) {
-      console.error("Failed to load suppliers:", supplierError);
+      console.error(
+        "Failed to load suppliers:",
+        supplierError
+      );
+
       return NextResponse.json(
         { error: "Suppliers could not be loaded." },
-        { status: 500 },
+        { status: 500 }
       );
     }
 
@@ -60,9 +74,9 @@ export async function POST(request: Request, context: RouteContext) {
       return NextResponse.json(
         {
           error:
-            "No supplier phone number is attached to this request. Add a supplier before starting the call.",
+            "No supplier phone number is attached to this request. Add a supplier before call.",
         },
-        { status: 400 },
+        { status: 400 }
       );
     }
 
@@ -90,7 +104,7 @@ export async function POST(request: Request, context: RouteContext) {
       "Thank the supplier and end the call professionally.",
     ]
       .filter(Boolean)
-      .join(" ");
+      .join("\n");
 
     const resultSchema = {
       type: "object",
@@ -110,74 +124,123 @@ export async function POST(request: Request, context: RouteContext) {
           type: "string",
           enum: ["yes", "no", "unknown"],
         },
-        price: { type: "string" },
-        currency: { type: "string" },
-        availability: { type: "string" },
-        minimum_order: { type: "string" },
-        delivery_time: { type: "string" },
-        payment_terms: { type: "string" },
-        additional_fees: { type: "string" },
-        notes: { type: "string" },
+        price: {
+          type: "string",
+        },
+        currency: {
+          type: "string",
+        },
+        availability: {
+          type: "string",
+        },
+        minimum_order: {
+          type: "string",
+        },
+        delivery_time: {
+          type: "string",
+        },
+        payment_terms: {
+          type: "string",
+        },
+        additional_fees: {
+          type: "string",
+        },
+        notes: {
+          type: "string",
+        },
       },
     };
 
     const webhookUrl =
       `${new URL(request.url).origin}/api/calle/webhook`;
 
-    // One outbound request only. We deliberately do NOT use createAndWait()
-    // because waiting/polling inside a Cloudflare Worker can exceed the
-    // Worker subrequest limit.
-    const response = await fetch("https://api.heycall-e.com/v1/calls", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "Idempotency-Key": `procurecall:${id}:${supplier.id}:${Date.now()}`,
-      },
-      body: JSON.stringify({
-        task,
-        recipients: [
-          {
-            phones: [supplier.phone],
-          },
-        ],
-        result_schema: resultSchema,
-        metadata: {
-          procurement_request_id: id,
-          supplier_id: supplier.id,
+    /*
+     * One outbound request only.
+     * We deliberately do NOT use createAndWait()
+     * because waiting/polling inside a Cloudflare Worker
+     * can exceed the Worker subrequest limit.
+     */
+    const response = await fetch(
+      "https://api.heycall-e.com/v1/calls",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "Idempotency-Key": `procurecall:${id}:${supplier.id}:${Date.now()}`,
         },
-        webhook_url: webhookUrl,
-      }),
-    });
+        body: JSON.stringify({
+          task,
+          recipients: [
+            {
+              phones: [supplier.phone],
+            },
+          ],
+          result_schema: resultSchema,
+          metadata: {
+            procurement_request_id: id,
+            supplier_id: supplier.id,
+          },
+          webhook_url: webhookUrl,
+        }),
+      }
+    );
 
-    const body = await response.json().catch(() => null);
+    const body = await response
+      .json()
+      .catch(() => null);
 
     if (!response.ok) {
-      console.error("CALL-E create call failed:", response.status, body);
+      console.error(
+        "CALL-E API error:",
+        response.status,
+        body
+      );
 
       return NextResponse.json(
         {
           error:
-            body?.error?.message ||
-            body?.message ||
-            "CALL-E could not start the supplier call.",
+            body?.error ??
+            body?.message ??
+            "CALL-E request failed.",
+          details: body ?? null,
         },
-        { status: response.status >= 400 && response.status < 600 ? response.status : 502 },
+        {
+          status:
+            response.status >= 400 &&
+            response.status < 600
+              ? response.status
+              : 502,
+        }
       );
     }
 
-    const callId = body?.id ?? body?.call_id ?? body?.call?.id ?? null;
+    const callId =
+      body?.id ??
+      body?.call_id ??
+      body?.call?.id ??
+      null;
 
     if (!callId) {
-      console.error("CALL-E returned no call ID:", body);
+      console.error(
+        "CALL-E returned no call ID:",
+        body
+      );
 
       return NextResponse.json(
-        { error: "CALL-E started an unexpected response without a call ID." },
-        { status: 502 },
+        {
+          error:
+            "CALL-E started an unexpected response without a call ID.",
+          response: body,
+        },
+        { status: 502 }
       );
     }
 
-    console.log("CALL-E call started:", callId);
+    console.log(
+      "CALL-E call started:",
+      callId
+    );
 
     return NextResponse.json({
       success: true,
@@ -187,7 +250,10 @@ export async function POST(request: Request, context: RouteContext) {
         "Supplier call started. CALL-E will send the completed result to ProcureCall.",
     });
   } catch (error) {
-    console.error("ProcureCall supplier call failed:", error);
+    console.error(
+      "ProcureCall supplier call failed:",
+      error
+    );
 
     return NextResponse.json(
       {
@@ -196,8 +262,7 @@ export async function POST(request: Request, context: RouteContext) {
             ? error.message
             : "Supplier call failed.",
       },
-      { status: 500 },
+      { status: 500 }
     );
   }
 }
-
