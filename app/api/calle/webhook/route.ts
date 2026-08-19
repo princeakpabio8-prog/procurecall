@@ -8,12 +8,7 @@ export async function POST(request: Request) {
     const eventId = request.headers.get("CALL-E-Event-Id");
     const payload = (await request.json()) as AnyObject;
 
-    const bodyEventId =
-      payload?.id ??
-      payload?.event_id ??
-      payload?.eventId ??
-      payload?.data?.id ??
-      null;
+   const bodyEventId = payload?.id ?? null;
 
     if (eventId && bodyEventId && eventId !== bodyEventId) {
       return NextResponse.json(
