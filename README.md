@@ -30,11 +30,12 @@ The deploy command regenerates `.open-next/worker.js` and
 Cloudflare dashboard build/deploy pipeline, use:
 
 - Build command: `npm run build:cloudflare`
-- Production deploy command: `npx wrangler deploy`
-- Non-production branch deploy command: `npx wrangler versions upload`
+- Production deploy command: `npm run deploy:cloudflare`
+- Non-production branch deploy command: `npm run version:cloudflare`
 
-Cloudflare runs the build command before either deploy command, which generates
-`.open-next/worker.js` and `.open-next/assets`.
+Both deploy scripts generate `.open-next/worker.js` and `.open-next/assets`
+immediately before Wrangler runs, so the deploy phase cannot start without the
+Worker entrypoint.
 
 Configure `CALLE_API_KEY`, Supabase environment variables, and other secrets
 in the Cloudflare Worker settings before testing calls.

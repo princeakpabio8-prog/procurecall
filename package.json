@@ -7,7 +7,7 @@
     "build": "next build --webpack",
     "build:cloudflare": "opennextjs-cloudflare build",
     "version:cloudflare": "npm run build:cloudflare && npx wrangler versions upload",
-    "deploy:cloudflare": "npx wrangler deploy",
+    "deploy:cloudflare": "npm run build:cloudflare && npx wrangler deploy",
     "deploy": "npm run build:cloudflare && wrangler deploy",
     "start": "next start",
     "lint": "eslint"
