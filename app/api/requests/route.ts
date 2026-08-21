@@ -18,7 +18,7 @@ export async function GET() {
       );
     }
 
-    return NextResponse.json(data ?? []);
+    return NextResponse.json({ requests: data ?? [] });
   } catch (error) {
     console.error("Unexpected requests API error:", error);
 
@@ -39,8 +39,13 @@ export async function POST(request: Request) {
       targetBudget,
       deliveryLocation,
       supplierPhone,
+      supplierPhones,
       instructions,
     } = body;
+
+    const phones = Array.isArray(supplierPhones)
+      ? supplierPhones.map((phone) => String(phone).trim()).filter(Boolean)
+      : [String(supplierPhone ?? "").trim()].filter(Boolean);
 
     if (!productOrService) {
       return NextResponse.json(
@@ -49,7 +54,7 @@ export async function POST(request: Request) {
       );
     }
 
-    if (!supplierPhone) {
+    if (phones.length === 0) {
       return NextResponse.json(
         { error: "Supplier phone number is required." },
         { status: 400 },
@@ -86,14 +91,15 @@ export async function POST(request: Request) {
       );
     }
 
-    const { data: supplier, error: supplierError } = await supabase
+    const { data: suppliers, error: supplierError } = await supabase
       .from("suppliers")
-      .insert({
-        procurement_request_id: procurementRequest.id,
-        phone: supplierPhone,
-      })
-      .select()
-      .single();
+      .insert(
+        phones.map((phone) => ({
+          procurement_request_id: procurementRequest.id,
+          phone,
+        })),
+      )
+      .select();
 
     if (supplierError) {
       console.error("Failed to create supplier:", supplierError);
@@ -118,7 +124,7 @@ export async function POST(request: Request) {
       {
         success: true,
         request: procurementRequest,
-        supplier,
+        suppliers: suppliers ?? [],
       },
       { status: 201 },
     );

@@ -44,6 +44,50 @@ export async function GET(
       );
     }
 
+    const apiKey = process.env.CALLE_API_KEY;
+    const pendingResults = (callResults ?? []).filter((result) =>
+      !["completed", "complete", "finished", "success", "successful", "failed", "failure", "error", "cancelled", "canceled", "no_answer", "no-answer"].includes(
+        String(result.status ?? "").toLowerCase(),
+      ),
+    );
+
+    if (apiKey && pendingResults.length > 0) {
+      await Promise.all(
+        pendingResults.map(async (result) => {
+          try {
+            const providerResponse = await fetch(
+              `https://api.heycall-e.com/v1/calls/${result.call_id}`,
+              { headers: { Authorization: `Bearer ${apiKey}` }, cache: "no-store" },
+            );
+            const providerCall = await providerResponse.json().catch(() => null);
+
+            if (!providerResponse.ok || !providerCall) return;
+
+            const completionConfidence =
+              typeof providerCall.completion_confidence === "object"
+                ? providerCall.completion_confidence?.score ?? null
+                : providerCall.completion_confidence ?? null;
+            const update = {
+              status: providerCall.status ?? result.status,
+              task_completed: providerCall.task_completed ?? null,
+              completion_confidence: completionConfidence,
+              summary: providerCall.summary ?? null,
+              structured_result: providerCall.structured_result ?? null,
+              evidence: providerCall.evidence ?? null,
+            };
+
+            await supabase
+              .from("call_results")
+              .update(update)
+              .eq("id", result.id);
+            Object.assign(result, update);
+          } catch (reconciliationError) {
+            console.error("Failed to reconcile CALL-E result:", reconciliationError);
+          }
+        }),
+      );
+    }
+
     return NextResponse.json({
       request: procurementRequest,
       call: callResults?.[0] ?? null,
@@ -235,8 +279,16 @@ export async function POST(
         .map((result) => result.supplier_id),
     );
 
+    const activeSupplierIds = new Set(
+      (existingResults ?? [])
+        .filter((result) => !["failed", "failure", "error", "cancelled", "canceled", "no_answer", "no-answer"].includes(String(result.status).toLowerCase()))
+        .map((result) => result.supplier_id),
+    );
+
     const suppliersToCall = targetSuppliers.filter(
-      (supplier) => !completedSupplierIds.has(supplier.id),
+      (supplier) =>
+        !completedSupplierIds.has(supplier.id) &&
+        !activeSupplierIds.has(supplier.id),
     );
 
     const startedCalls = await Promise.all(
@@ -282,6 +334,19 @@ export async function POST(
           throw new Error(`${supplier.phone}: CALL-E returned no call ID.`);
         }
 
+        const { error: pendingResultError } = await supabase
+          .from("call_results")
+          .insert({
+            procurement_request_id: id,
+            supplier_id: supplier.id,
+            call_id: callId,
+            status: body?.status ?? "queued",
+          });
+
+        if (pendingResultError) {
+          console.error("Failed to save pending CALL-E result:", pendingResultError);
+        }
+
         return {
           callId,
           supplierId: supplier.id,
@@ -294,6 +359,7 @@ export async function POST(
       success: true,
       startedCalls,
       skippedSupplierIds: [...completedSupplierIds],
+      activeSupplierIds: [...activeSupplierIds],
       message:
         "Supplier calls started. CALL-E will send completed results to ProcureCall.",
     });

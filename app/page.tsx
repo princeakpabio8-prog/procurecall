@@ -44,6 +44,13 @@ export default function Home() {
               >
                 View requests
               </Link>
+
+              <Link
+                href="/dashboard"
+                className="rounded-full border border-black/10 bg-white px-6 py-3.5 text-center text-sm font-medium text-black transition hover:bg-black/[0.03]"
+              >
+                Open dashboard
+              </Link>
             </div>
           </div>
         </div>

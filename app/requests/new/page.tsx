@@ -4,6 +4,7 @@ import Link from "next/link";
 import { FormEvent, useState } from "react";
 
 export default function NewRequestPage() {
+  const [supplierPhones, setSupplierPhones] = useState([""]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -18,12 +19,14 @@ export default function NewRequestPage() {
 
     const formData = new FormData(form);
 
+    const phones = supplierPhones.map((phone) => phone.trim()).filter(Boolean);
+
     const payload = {
       productOrService: String(formData.get("productOrService") ?? ""),
       quantity: String(formData.get("quantity") ?? ""),
       targetBudget: String(formData.get("targetBudget") ?? ""),
       deliveryLocation: String(formData.get("deliveryLocation") ?? ""),
-      supplierPhone: String(formData.get("supplierPhone") ?? ""),
+      supplierPhones: phones,
       instructions: String(formData.get("instructions") ?? ""),
     };
 
@@ -58,6 +61,7 @@ export default function NewRequestPage() {
       );
 
       form.reset();
+      setSupplierPhones([""]);
     } catch (submitError) {
       setError(
         submitError instanceof Error
@@ -178,22 +182,58 @@ export default function NewRequestPage() {
             </div>
 
             <div>
-              <label
-                htmlFor="supplierPhone"
-                className="mb-2 block text-sm font-medium"
-              >
-                Supplier phone number
-              </label>
-              <input
-                id="supplierPhone"
-                name="supplierPhone"
-                type="tel"
-                placeholder="+1 555 123 4567"
-                className="w-full rounded-2xl border border-black/10 bg-white px-4 py-4 text-sm outline-none transition placeholder:text-black/30 focus:border-black/30"
-              />
+              <div className="mb-2 flex items-center justify-between gap-4">
+                <label className="block text-sm font-medium">
+                  Supplier phone numbers
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setSupplierPhones((current) => [...current, ""])}
+                  className="text-sm font-medium text-black/60 hover:text-black"
+                >
+                  + Add supplier
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                {supplierPhones.map((phone, index) => (
+                  <div key={index} className="flex gap-3">
+                    <input
+                      name="supplierPhone"
+                      type="tel"
+                      required={index === 0}
+                      value={phone}
+                      onChange={(event) =>
+                        setSupplierPhones((current) =>
+                          current.map((item, itemIndex) =>
+                            itemIndex === index ? event.target.value : item,
+                          ),
+                        )
+                      }
+                      placeholder="+1 555 123 4567"
+                      className="w-full rounded-2xl border border-black/10 bg-white px-4 py-4 text-sm outline-none transition placeholder:text-black/30 focus:border-black/30"
+                    />
+                    {supplierPhones.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSupplierPhones((current) =>
+                            current.filter((_, itemIndex) => itemIndex !== index),
+                          )
+                        }
+                        className="px-2 text-sm text-black/40 hover:text-red-700"
+                        aria-label={`Remove supplier ${index + 1}`}
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+
               <p className="mt-2 text-xs leading-5 text-black/40">
-                The number will only be used when you explicitly start the
-                supplier call.
+                Add two or more suppliers to compare their offers. Numbers are
+                only used when you start the supplier call.
               </p>
             </div>
 
