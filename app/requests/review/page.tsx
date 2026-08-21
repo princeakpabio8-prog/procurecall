@@ -3,6 +3,10 @@
 import Link from "next/link";
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import {
+  analyzeOffer,
+  recommendationFor as getRecommendation,
+} from "@/lib/procurement/analysis";
 
 type ProcurementRequest = {
   id: string;
@@ -82,47 +86,9 @@ function toSupplierOffer(value: unknown): SupplierOffer {
     : {};
 }
 
-function knownValue(offer: SupplierOffer, key: string) {
+function offerKnown(offer: SupplierOffer, key: string) {
   const value = String(offer[key] ?? "").trim().toLowerCase();
-  return value && value !== "unknown" && value !== "not provided";
-}
-
-function priceNumber(value: unknown) {
-  const match = String(value ?? "").replace(/,/g, "").match(/\d+(?:\.\d+)?/);
-  return match ? Number(match[0]) : null;
-}
-
-function recommendationFor(results: CallResult[]) {
-  const candidates = results
-    .map((result) => {
-      const offer = toSupplierOffer(result.structured_result);
-      const fulfillment = String(offer.supplier_can_fulfill ?? "").toLowerCase();
-      const price = priceNumber(offer.price);
-      const knownFields = [
-        "price",
-        "availability",
-        "delivery_time",
-        "minimum_order",
-        "payment_terms",
-        "additional_fees",
-      ].filter((key) => knownValue(offer, key)).length;
-
-      return {
-        result,
-        fulfillment,
-        price,
-        knownFields,
-        score:
-          (fulfillment === "yes" ? 40 : fulfillment === "unknown" ? 15 : 0) +
-          (price === null ? 0 : 25) +
-          (knownValue(offer, "availability") ? 10 : 0) +
-          (knownValue(offer, "delivery_time") ? 10 : 0) +
-          Math.round((knownFields / 6) * 15),
-      };
-    })
-    .sort((left, right) => right.score - left.score);
-
-  return candidates[0] ?? null;
+  return Boolean(value && value !== "unknown" && value !== "not provided");
 }
 
 function evidenceItems(value: unknown) {
@@ -161,6 +127,30 @@ function errorMessage(value: unknown, fallback: string) {
   return fallback;
 }
 
+function formatAmount(value: number | null, offer: SupplierOffer) {
+  if (value === null) return "Unknown";
+  const currency = offerValue(offer, "currency").toLowerCase();
+  const symbol = currency === "naira" || currency === "ngn" ? "₦" : "";
+  return `${symbol}${value.toLocaleString()}`;
+}
+
+function callStatusLabel(status: unknown) {
+  return String(status ?? "queued").replaceAll("_", " ").toUpperCase();
+}
+
+function matchLabel(value: "match" | "not_match" | "unknown") {
+  return value === "match" ? "MATCH" : value === "not_match" ? "DOES NOT MATCH" : "UNKNOWN";
+}
+
+function requirementIssues(analysis: ReturnType<typeof analyzeOffer>) {
+  const issues: string[] = [];
+  if (analysis.fulfillment === "no") issues.push("supplier cannot fulfill the request");
+  if (analysis.quantityMatch === "not_match") issues.push("minimum order exceeds the requested quantity");
+  if (analysis.budgetMatch === "not_match") issues.push("estimated minimum-order cost exceeds the budget");
+  if (analysis.responseStatus !== "received") issues.push("the offer is incomplete");
+  return issues;
+}
+
 function ReviewRequestContent() {
   const searchParams = useSearchParams();
   const requestId = searchParams.get("id");
@@ -172,7 +162,7 @@ function ReviewRequestContent() {
   const [calling, setCalling] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
-  const recommendation = recommendationFor(callResults);
+  const recommendation = getRecommendation(request ?? {}, callResults);
 
   const loadRequest = useCallback(async () => {
     if (!requestId) {
@@ -393,7 +383,9 @@ function ReviewRequestContent() {
             {recommendation && (
               <div className="mt-5 rounded-xl border border-amber-300 bg-amber-50 p-5">
                 <p className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-800">
-                  RECOMMENDED SUPPLIER
+                  {recommendation.kind === "recommended"
+                    ? "RECOMMENDED SUPPLIER"
+                    : "BEST AVAILABLE OFFER - REQUIREMENTS NOT MET"}
                 </p>
                 <p className="mt-2 text-lg font-semibold text-black">
                   {suppliers.find(
@@ -405,12 +397,25 @@ function ReviewRequestContent() {
                     "Supplier"}
                 </p>
                 <p className="mt-2 text-sm leading-6 text-black/65">
-                  {recommendation.fulfillment === "yes"
-                    ? "Can fulfill the request"
-                    : "No supplier confirmed fulfillment; this is the strongest available option"}
-                  {recommendation.price !== null
-                    ? " with the strongest overall match across price, availability, delivery, and offer completeness."
-                    : ". Price comparison was not available, so the recommendation uses fulfillment and requirement coverage."}
+                  {recommendation.kind === "recommended"
+                    ? "This supplier satisfies the known procurement requirements."
+                    : "No supplier fully meets the request. This is the strongest meaningful offer found, but one or more requirements remain unmet."}
+                </p>
+                {recommendation.kind === "best_available" && (
+                  <p className="mt-3 text-sm text-amber-900">
+                    Why it does not qualify: {requirementIssues(recommendation.analysis).join(", ") || "one or more requirements are unknown"}.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {!recommendation && (
+              <div className="mt-5 rounded-xl border border-red-200 bg-red-50 p-5">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-red-800">
+                  NO SUITABLE SUPPLIER FOUND
+                </p>
+                <p className="mt-2 text-sm leading-6 text-red-900">
+                  No supplier returned a meaningful offer. No procurement recommendation was made.
                 </p>
               </div>
             )}
@@ -421,9 +426,9 @@ function ReviewRequestContent() {
                   key={callResult.id || callResult.call_id}
                   className="rounded-xl border border-green-200 bg-white/70 p-5"
                 >
-                  {recommendation?.result.id === callResult.id && (
+                  {recommendation && recommendation.result.id === callResult.id && (
                     <span className="mb-4 inline-flex rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-900">
-                      Recommended
+                      {recommendation.kind === "recommended" ? "Recommended" : "Best available offer"}
                     </span>
                   )}
                   <p className="text-xs font-semibold uppercase tracking-wider text-green-700/70">
@@ -434,16 +439,19 @@ function ReviewRequestContent() {
 
                   <div className="mt-4 grid gap-4 sm:grid-cols-2">
                     <div>
-                      <p className="text-xs text-green-700/70">Status</p>
+                      <p className="text-xs text-green-700/70">Call status</p>
                       <p className="mt-1 text-sm font-medium">
-                        {callResult.status || "Unknown"}
+                        {callStatusLabel(callResult.status)}
                       </p>
                     </div>
 
                     <div>
-                      <p className="text-xs text-green-700/70">Completed</p>
+                      <p className="text-xs text-green-700/70">Supplier response</p>
                       <p className="mt-1 text-sm font-medium">
-                        {callResult.task_completed === true ? "Yes" : "No / unknown"}
+                        {analyzeOffer(
+                          request ?? {},
+                          toSupplierOffer(callResult.structured_result),
+                        ).responseStatus.replaceAll("_", " ").toUpperCase()}
                       </p>
                     </div>
                   </div>
@@ -484,6 +492,43 @@ function ReviewRequestContent() {
                           </div>
                         ))}
                       </dl>
+
+                      {(() => {
+                        const offer = toSupplierOffer(callResult.structured_result);
+                        const analysis = analyzeOffer(request ?? {}, offer);
+                        return (
+                          <>
+                            <div className="mt-6 border-t border-black/10 pt-5">
+                              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-green-700">
+                                PROCUREMENT INTERPRETATION
+                              </p>
+                              <dl className="mt-4 grid gap-4 sm:grid-cols-2">
+                                <div><dt className="text-xs text-black/45">Fulfillment</dt><dd className="mt-1 text-sm font-semibold">{analysis.fulfillment === "yes" ? "Can fulfill" : analysis.fulfillment === "no" ? "Cannot fulfill" : "Unknown"}</dd></div>
+                                <div><dt className="text-xs text-black/45">Requested quantity</dt><dd className="mt-1 text-sm font-semibold">{analysis.requestedQuantity ?? "Unknown"}</dd></div>
+                                <div><dt className="text-xs text-black/45">Required order after MOQ</dt><dd className="mt-1 text-sm font-semibold">{analysis.requiredOrderQuantity ?? "Unknown"}</dd></div>
+                                <div><dt className="text-xs text-black/45">Cost at requested quantity</dt><dd className="mt-1 text-sm font-semibold">{formatAmount(analysis.requestedSubtotal, offer)}</dd></div>
+                                <div><dt className="text-xs text-black/45">Minimum-order product cost</dt><dd className="mt-1 text-sm font-semibold">{formatAmount(analysis.minimumOrderSubtotal, offer)}</dd></div>
+                                <div><dt className="text-xs text-black/45">Fees</dt><dd className="mt-1 text-sm font-semibold">{formatAmount(analysis.fees, offer)}</dd></div>
+                                <div><dt className="text-xs text-black/45">Estimated total</dt><dd className="mt-1 text-sm font-semibold">{formatAmount(analysis.estimatedTotal, offer)}</dd></div>
+                                <div><dt className="text-xs text-black/45">Budget status</dt><dd className="mt-1 text-sm font-semibold">{analysis.budgetStatus === "within_budget" ? "Within budget" : analysis.budgetStatus === "over_budget" ? "Over budget" : "Budget unknown"}</dd></div>
+                              </dl>
+                              {analysis.budgetDifference !== null && analysis.budgetDifference > 0 && (
+                                <p className="mt-4 text-sm text-red-700">{formatAmount(analysis.budgetDifference, offer)} over the buyer budget.</p>
+                              )}
+                            </div>
+
+                            <div className="mt-6 border-t border-black/10 pt-5">
+                              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-green-700">REQUIREMENT MATCH</p>
+                              <dl className="mt-4 grid gap-3 text-sm">
+                                <div className="flex justify-between gap-4"><dt>Quantity / MOQ</dt><dd className="font-medium">{matchLabel(analysis.quantityMatch)}</dd></div>
+                                <div className="flex justify-between gap-4"><dt>Budget</dt><dd className="font-medium">{matchLabel(analysis.budgetMatch)}</dd></div>
+                                <div className="flex justify-between gap-4"><dt>Availability</dt><dd className="font-medium">{matchLabel(analysis.availabilityMatch)}</dd></div>
+                                <div className="flex justify-between gap-4"><dt>Delivery information</dt><dd className="font-medium">{matchLabel(analysis.deliveryMatch)}</dd></div>
+                              </dl>
+                            </div>
+                          </>
+                        );
+                      })()}
                     </div>
                   )}
 
@@ -501,7 +546,7 @@ function ReviewRequestContent() {
                     </div>
                   )}
 
-                  {knownValue(
+                  {offerKnown(
                     toSupplierOffer(callResult.structured_result),
                     "notes",
                   ) && (

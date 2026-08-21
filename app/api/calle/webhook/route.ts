@@ -100,6 +100,26 @@ export async function POST(request: Request) {
 
     const supabase = createAdminClient();
 
+    const { data: supplier } = await supabase
+      .from("suppliers")
+      .select("id")
+      .eq("id", supplierId)
+      .eq("procurement_request_id", procurementRequestId)
+      .maybeSingle();
+
+    if (!supplier) {
+      console.error("CALL-E webhook supplier/request mismatch:", {
+        callId,
+        procurementRequestId,
+        supplierId,
+      });
+
+      return NextResponse.json(
+        { error: "CALL-E supplier does not belong to this procurement request." },
+        { status: 400 },
+      );
+    }
+
     const { data: existing } = await supabase
       .from("call_results")
       .select("id")
