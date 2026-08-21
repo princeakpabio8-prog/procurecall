@@ -16,6 +16,29 @@ bun dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
+## Deploy to Cloudflare Workers
+
+Build the OpenNext Worker bundle and deploy it with Wrangler:
+
+```bash
+npm run build:cloudflare
+npm run deploy:cloudflare
+```
+
+The deploy command regenerates `.open-next/worker.js` and
+`.open-next/assets` immediately before running `wrangler deploy`. For a
+Cloudflare dashboard build/deploy pipeline, use:
+
+- Build command: `npm run build:cloudflare`
+- Production deploy command: `npx wrangler deploy`
+- Non-production branch deploy command: `npx wrangler versions upload`
+
+Cloudflare runs the build command before either deploy command, which generates
+`.open-next/worker.js` and `.open-next/assets`.
+
+Configure `CALLE_API_KEY`, Supabase environment variables, and other secrets
+in the Cloudflare Worker settings before testing calls.
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.

@@ -1,12 +1,73 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/server";
 
+export async function GET(
+  _request: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await params;
+
+    if (!id) {
+      return NextResponse.json(
+        { error: "Request ID is required." },
+        { status: 400 },
+      );
+    }
+
+    const supabase = createAdminClient();
+    const [{ data: procurementRequest, error: requestError }, { data: callResults, error: callResultError }] = await Promise.all([
+      supabase
+        .from("procurement_requests")
+        .select("*")
+        .eq("id", id)
+        .single(),
+      supabase
+        .from("call_results")
+        .select("*")
+        .eq("procurement_request_id", id)
+        .order("created_at", { ascending: false }),
+    ]);
+
+    if (requestError || !procurementRequest) {
+      return NextResponse.json(
+        { error: "Procurement request not found." },
+        { status: 404 },
+      );
+    }
+
+    if (callResultError) {
+      console.error("Failed to load CALL-E result:", callResultError);
+      return NextResponse.json(
+        { error: "The CALL-E result could not be loaded." },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({
+      request: procurementRequest,
+      call: callResults?.[0] ?? null,
+      callResult: callResults?.[0] ?? null,
+      callResults: callResults ?? [],
+    });
+  } catch (error) {
+    console.error("Unexpected call result API error:", error);
+    return NextResponse.json(
+      { error: "Failed to load call result." },
+      { status: 500 },
+    );
+  }
+}
+
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
+    const callInput = await request.json().catch(() => ({}));
+    const supplierId =
+      typeof callInput?.supplierId === "string" ? callInput.supplierId : null;
 
     if (!id) {
       return NextResponse.json(
@@ -68,9 +129,11 @@ export async function POST(
       );
     }
 
-    const supplier = suppliers?.[0];
+    const targetSuppliers = supplierId
+      ? suppliers?.filter((candidate) => candidate.id === supplierId)
+      : suppliers ?? [];
 
-    if (!supplier?.phone) {
+    if (targetSuppliers.length === 0 || targetSuppliers.some((supplier) => !supplier.phone)) {
       return NextResponse.json(
         {
           error:
@@ -160,94 +223,79 @@ export async function POST(
      * because waiting/polling inside a Cloudflare Worker
      * can exceed the Worker subrequest limit.
      */
-    const response = await fetch(
-      "https://api.heycall-e.com/v1/calls",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "Idempotency-Key": `procurecall:${id}:${supplier.id}:${Date.now()}`,
-        },
-        body: JSON.stringify({
-          task,
-          recipients: [
-            {
-              phones: [supplier.phone],
-            },
-          ],
-          result_schema: resultSchema,
-          metadata: {
-            procurement_request_id: id,
-            supplier_id: supplier.id,
-          },
-          webhook_url: webhookUrl,
-        }),
-      }
+    const { data: existingResults } = await supabase
+      .from("call_results")
+      .select("supplier_id, status")
+      .eq("procurement_request_id", id)
+      .in("supplier_id", targetSuppliers.map((supplier) => supplier.id));
+
+    const completedSupplierIds = new Set(
+      (existingResults ?? [])
+        .filter((result) => ["completed", "complete", "finished", "success", "successful"].includes(String(result.status).toLowerCase()))
+        .map((result) => result.supplier_id),
     );
 
-    const body = await response
-      .json()
-      .catch(() => null);
+    const suppliersToCall = targetSuppliers.filter(
+      (supplier) => !completedSupplierIds.has(supplier.id),
+    );
 
-    if (!response.ok) {
-      console.error(
-        "CALL-E API error:",
-        response.status,
-        body
-      );
+    const startedCalls = await Promise.all(
+      suppliersToCall.map(async (supplier) => {
+        const response = await fetch("https://api.heycall-e.com/v1/calls", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+            "Idempotency-Key": `procurecall:${id}:${supplier.id}:v1`,
+          },
+          body: JSON.stringify({
+            task,
+            recipients: [{ phones: [supplier.phone] }],
+            result_schema: resultSchema,
+            metadata: {
+              procurement_request_id: id,
+              supplier_id: supplier.id,
+            },
+            webhook_url: webhookUrl,
+          }),
+        });
 
-      return NextResponse.json(
-        {
-          error:
-            body?.error ??
-            body?.message ??
-            "CALL-E request failed.",
-          details: body ?? null,
-        },
-        {
-          status:
-            response.status >= 400 &&
-            response.status < 600
-              ? response.status
-              : 502,
+        const body = await response.json().catch(() => null);
+
+        if (!response.ok) {
+          const providerError = body?.error;
+          const errorMessage =
+            typeof providerError === "string"
+              ? providerError
+              : typeof body?.message === "string"
+                ? body.message
+                : providerError
+                  ? JSON.stringify(providerError)
+                  : "CALL-E request failed.";
+
+          throw new Error(`${supplier.phone}: ${errorMessage}`);
         }
-      );
-    }
 
-    const callId =
-      body?.id ??
-      body?.call_id ??
-      body?.call?.id ??
-      null;
+        const callId = body?.id ?? body?.call_id ?? body?.call?.id ?? null;
 
-    if (!callId) {
-      console.error(
-        "CALL-E returned no call ID:",
-        body
-      );
+        if (!callId) {
+          throw new Error(`${supplier.phone}: CALL-E returned no call ID.`);
+        }
 
-      return NextResponse.json(
-        {
-          error:
-            "CALL-E started an unexpected response without a call ID.",
-          response: body,
-        },
-        { status: 502 }
-      );
-    }
-
-    console.log(
-      "CALL-E call started:",
-      callId
+        return {
+          callId,
+          supplierId: supplier.id,
+          status: body?.status ?? "queued",
+        };
+      }),
     );
 
     return NextResponse.json({
       success: true,
-      callId,
-      status: body?.status ?? "queued",
+      startedCalls,
+      skippedSupplierIds: [...completedSupplierIds],
       message:
-        "Supplier call started. CALL-E will send the completed result to ProcureCall.",
+        "Supplier calls started. CALL-E will send completed results to ProcureCall.",
     });
   } catch (error) {
     console.error(

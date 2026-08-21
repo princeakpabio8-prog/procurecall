@@ -5,6 +5,44 @@ import Link from "next/link";
 
 type AnyObject = Record<string, any>;
 
+function offerValue(offer: AnyObject, key: string) {
+  const value = offer[key];
+  return value === null || value === undefined || value === ""
+    ? "Unknown"
+    : String(value);
+}
+
+function formatOfferPrice(offer: AnyObject) {
+  const price = offerValue(offer, "price");
+  const currency = offerValue(offer, "currency").toLowerCase();
+  const symbol = currency === "naira" || currency === "ngn" ? "₦" : "";
+  const match = price.match(
+    /^(?:₦|ngn|naira)?\s*([\d,]+(?:\.\d+)?)\s*(?:₦|ngn|naira)?\s+(?:per|\/)\s+(.+)$/i,
+  );
+  return match ? `${symbol}${match[1]} / ${match[2]}` : `${symbol}${price}`;
+}
+
+function supplierOffer(offer: AnyObject) {
+  return [
+    ["Price", formatOfferPrice(offer)],
+    ["Availability", offerValue(offer, "availability")],
+    ["Delivery", offerValue(offer, "delivery_time")],
+    ["Minimum order", offerValue(offer, "minimum_order")],
+    ["Payment terms", offerValue(offer, "payment_terms")],
+    ["Additional fees", offerValue(offer, "additional_fees")],
+    ["Can fulfill request", offerValue(offer, "supplier_can_fulfill")],
+  ];
+}
+
+function evidenceItems(value: unknown) {
+  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  if (typeof value === "string" && value.trim()) return [value.trim()];
+  if (value && typeof value === "object") {
+    return Object.entries(value).map(([key, item]) => `${key}: ${String(item)}`);
+  }
+  return [];
+}
+
 export default function ReportClient({ id }: { id: string }) {
   const [data, setData] = useState<AnyObject | null>(null);
   const [loading, setLoading] = useState(true);
@@ -96,6 +134,7 @@ export default function ReportClient({ id }: { id: string }) {
         : "WAITING FOR RESULT";
 
   const summary = call?.summary || call?.notes || "";
+  const offer = call?.structured_result;
 
   return (
     <main className="page">
@@ -222,6 +261,31 @@ export default function ReportClient({ id }: { id: string }) {
                       <span>AI summary</span>
 
                       <p>{summary}</p>
+                    </div>
+                  )}
+
+                  {offer && typeof offer === "object" && (
+                    <div className="resultBox offerCard">
+                      <span>Supplier offer</span>
+                      <div className="offerGrid">
+                        {supplierOffer(offer).map(([label, value]) => (
+                          <div key={label}>
+                            <small>{label}</small>
+                            <strong>{value}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {call?.evidence && (
+                    <div className="resultBox">
+                      <span>Evidence</span>
+                      <ul className="evidenceList">
+                        {evidenceItems(call.evidence).map((item, index) => (
+                          <li key={`${item}-${index}`}>{item}</li>
+                        ))}
+                      </ul>
                     </div>
                   )}
 
@@ -427,6 +491,36 @@ export default function ReportClient({ id }: { id: string }) {
           line-height: 1.6;
         }
 
+        .offerGrid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 16px;
+        }
+
+        .offerGrid small,
+        .offerGrid strong {
+          display: block;
+        }
+
+        .offerGrid small {
+          color: #8a94a1;
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+        }
+
+        .offerGrid strong {
+          margin-top: 5px;
+          font-size: 15px;
+        }
+
+        .evidenceList {
+          margin: 0;
+          padding-left: 18px;
+          line-height: 1.6;
+        }
+
         .footer {
           margin-top: 25px;
           padding-top: 18px;
@@ -442,6 +536,12 @@ export default function ReportClient({ id }: { id: string }) {
 
         .error p {
           color: #8d3b3b;
+        }
+
+        @media (max-width: 680px) {
+          .offerGrid {
+            grid-template-columns: 1fr;
+          }
         }
 
         button {
