@@ -1,19 +1,20 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/server";
 
-type AnyObject = Record<string, any>;
+type AnyObject = Record<string, unknown>;
+
+function asObject(value: unknown): AnyObject {
+  return value && typeof value === "object"
+    ? (value as AnyObject)
+    : {};
+}
 
 export async function POST(request: Request) {
   try {
     const eventId = request.headers.get("CALL-E-Event-Id");
     const payload = (await request.json()) as AnyObject;
 
-    const bodyEventId =
-      payload?.id ??
-      payload?.event_id ??
-      payload?.eventId ??
-      payload?.data?.id ??
-      null;
+   const bodyEventId = payload?.id ?? null;
 
     if (eventId && bodyEventId && eventId !== bodyEventId) {
       return NextResponse.json(
@@ -22,8 +23,8 @@ export async function POST(request: Request) {
       );
     }
 
-    const event = payload?.call ?? payload?.data ?? payload;
-    const call = event?.call ?? event;
+    const event = asObject(payload.call ?? payload.data ?? payload);
+    const call = asObject(event.call ?? event);
 
     const callId =
       call?.id ??
@@ -32,13 +33,14 @@ export async function POST(request: Request) {
       payload?.callId ??
       null;
 
-    const status = call?.status ?? payload?.status ?? null;
+    const status = call?.status ?? event?.status ?? payload?.status ?? null;
 
-    const metadata =
+    const metadata = asObject(
       call?.metadata ??
-      payload?.metadata ??
-      call?.call?.metadata ??
-      {};
+        event?.metadata ??
+        payload?.metadata ??
+        asObject(call.call).metadata,
+    );
 
     const procurementRequestId =
       metadata?.procurement_request_id ??
@@ -73,7 +75,7 @@ export async function POST(request: Request) {
 
     const completionConfidence =
       typeof call?.completion_confidence === "object"
-        ? call.completion_confidence?.score ?? null
+        ? asObject(call.completion_confidence).score ?? null
         : call?.completion_confidence ??
           call?.completionConfidence ??
           null;
@@ -97,6 +99,26 @@ export async function POST(request: Request) {
       null;
 
     const supabase = createAdminClient();
+
+    const { data: supplier } = await supabase
+      .from("suppliers")
+      .select("id")
+      .eq("id", supplierId)
+      .eq("procurement_request_id", procurementRequestId)
+      .maybeSingle();
+
+    if (!supplier) {
+      console.error("CALL-E webhook supplier/request mismatch:", {
+        callId,
+        procurementRequestId,
+        supplierId,
+      });
+
+      return NextResponse.json(
+        { error: "CALL-E supplier does not belong to this procurement request." },
+        { status: 400 },
+      );
+    }
 
     const { data: existing } = await supabase
       .from("call_results")

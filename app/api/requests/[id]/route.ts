@@ -63,15 +63,13 @@ export async function GET(
     }
 
     const {
-      data: callResult,
+      data: callResults,
       error: callResultError,
     } = await supabase
       .from("call_results")
       .select("*")
       .eq("procurement_request_id", id)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .order("created_at", { ascending: false });
 
     if (callResultError) {
       console.error(
@@ -91,7 +89,8 @@ export async function GET(
     return NextResponse.json({
       request: procurementRequest,
       suppliers: suppliers ?? [],
-      callResult: callResult ?? null,
+      callResults: callResults ?? [],
+      callResult: callResults?.[0] ?? null,
     });
   } catch (error) {
     console.error(
